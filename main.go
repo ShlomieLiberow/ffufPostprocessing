@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"github.com/dsecuredcom/ffufPostprocessing/pkg/general"
@@ -8,10 +9,8 @@ import (
 	_struct "github.com/dsecuredcom/ffufPostprocessing/pkg/struct"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
-	"sync"
 )
 
 func main() {
@@ -137,49 +136,49 @@ func main() {
 		}
 	}
 
-	if Configuration.DeleteUnnecessaryBodyFiles == false && Configuration.DeleteAllBodyFiles == false {
-		return
+	if Configuration.DeleteUnnecessaryBodyFiles || Configuration.DeleteAllBodyFiles {
+		if Configuration.FfufBodiesFolder == "" {
+			fmt.Printf("\033[31m[x]\033[0m Bodies folder is not set, cannot delete unnecessary files!\n")
+			return
+		}
+
+		if Configuration.DeleteUnnecessaryBodyFiles {
+			fmt.Printf("\033[32m[i]\033[0m Deleting unnecessary body files\n")
+		} else {
+			fmt.Printf("\033[32m[i]\033[0m Deleting all body files\n")
+		}
+
+		deleteFiles(Configuration.FfufBodiesFolder, ResultFileNamesToBeDeleted)
 	}
-
-	if Configuration.FfufBodiesFolder == "" {
-		fmt.Printf("\033[31m[x]\033[0m Bodies folder is not set, cannot delete unnecessary files!\n")
-		return
-	}
-
-	if Configuration.DeleteUnnecessaryBodyFiles {
-		fmt.Printf("\033[32m[i]\033[0m Deleting unnecessary body files\n")
-	} else {
-		fmt.Printf("\033[32m[i]\033[0m Deleting all body files\n")
-	}
-
-	workerCount := runtime.NumCPU() * 3
-	jobs := make(chan string, len(ResultFileNamesToBeDeleted))
-	var wg sync.WaitGroup
-
-	// Create worker pool
-	for w := 0; w < workerCount; w++ {
-		wg.Add(1)
-		go worker(&wg, jobs, Configuration.FfufBodiesFolder)
-	}
-
-	// Send jobs to the pool
-	for _, Filename := range ResultFileNamesToBeDeleted {
-		jobs <- Filename
-	}
-	close(jobs)
-
-	wg.Wait()
-
 }
 
-func worker(wg *sync.WaitGroup, jobs <-chan string, FfufBodiesFolder string) {
-	defer wg.Done()
-	for Filename := range jobs {
-		NormalizedPath := strings.TrimRight(FfufBodiesFolder, "/\\")
-		NormalizedPath = filepath.Join(NormalizedPath, Filename)
+func deleteFiles(bodiesFolder string, filesToDelete []string) {
+	fmt.Printf("\033[34m[i]\033[0m Deleting %d files\n", len(filesToDelete))
 
-		if general.FileExists(NormalizedPath) {
-			os.Remove(NormalizedPath)
-		}
+	// Create a temporary file to store the list of files to delete
+	tempFile, err := os.CreateTemp("", "files_to_delete")
+	if err != nil {
+		fmt.Printf("\033[31m[x]\033[0m Error creating temporary file: %v\n", err)
+		return
+	}
+	defer os.Remove(tempFile.Name())
+
+	// Write the list of files to delete to the temporary file
+	writer := bufio.NewWriter(tempFile)
+	for _, filename := range filesToDelete {
+		fullPath := filepath.Join(bodiesFolder, filename)
+		writer.WriteString(fullPath + "\n")
+	}
+	writer.Flush()
+	tempFile.Close()
+
+	// Use the 'xargs' command to efficiently delete files
+	cmd := exec.Command("xargs", "-a", tempFile.Name(), "-P", "16", "rm", "-f")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("\033[31m[x]\033[0m Error deleting files: %v\n", err)
+		fmt.Printf("Output: %s\n", string(output))
+	} else {
+		fmt.Printf("\033[32m[i]\033[0m Files deleted successfully\n")
 	}
 }
